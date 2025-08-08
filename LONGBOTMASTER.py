@@ -25,9 +25,9 @@ if not API_KEY or API_KEY == "your_api_key_here" or \
 
 # === CONFIGURATION ===
 SYMBOL = 'BTC/USDT:USDT'
-LEVELS = [116536]  # Your target long level
+LEVELS = [116648]  # Your target long level
 CANDLE_COUNT = 4
-TRADE_SIZE_BTC = 0.01  # Desired position size in BTC
+TRADE_SIZE_BTC = 0.10  # Desired position size in BTC
 LEVERAGE = 10
 
 TP1_PERCENT = 0.0175
