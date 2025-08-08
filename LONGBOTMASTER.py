@@ -25,14 +25,14 @@ if not API_KEY or API_KEY == "your_api_key_here" or \
 
 # === CONFIGURATION ===
 SYMBOL = 'BTC/USDT:USDT'
-LEVELS = [116648]  # Your target long level
+LEVELS = [116259]  # Your target long level
 CANDLE_COUNT = 4
-TRADE_SIZE_BTC = 0.10  # Desired position size in BTC
+TRADE_SIZE_BTC = 0.15  # Desired position size in BTC
 LEVERAGE = 10
 
 TP1_PERCENT = 0.0175
 TP2_PERCENT = 0.03
-STOP_LOSS_PERCENT = 0.01
+STOP_LOSS_PERCENT = 0.005
 
 # === INIT EXCHANGE ===
 exchange = ccxt.okx({
