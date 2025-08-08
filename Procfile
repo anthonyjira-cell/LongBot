@@ -1,1 +1,1 @@
-worker: python LONGBOTMASTER.py
+worker: python LONGBOTmaster.py
