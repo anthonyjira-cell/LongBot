@@ -11,28 +11,25 @@ API_KEY = os.getenv("OKX_API_KEY") or "your_api_key_here"
 API_SECRET = os.getenv("OKX_API_SECRET") or "your_api_secret_here"
 API_PASSWORD = os.getenv("OKX_API_PASSPHRASE") or "your_api_password_here"
 
-# Debug prints to confirm credentials loaded
 print(f"API_KEY: {API_KEY[:4]}***")
 print(f"API_SECRET: {API_SECRET[:4]}***")
 print(f"API_PASSWORD: {API_PASSWORD[:4]}***")
 
-# Exit if any credential is missing or placeholder
 if not API_KEY or API_KEY == "your_api_key_here" or \
    not API_SECRET or API_SECRET == "your_api_secret_here" or \
    not API_PASSWORD or API_PASSWORD == "your_api_password_here":
-    print("❌ ERROR: Missing or invalid API credentials. Please set them in .env or hardcode before running.")
+    print("❌ ERROR: Missing or invalid API credentials.")
     sys.exit(1)
 
 # === CONFIGURATION ===
 SYMBOL = 'BTC/USDT:USDT'
-LEVELS = [117425]  # Your target long level
-CANDLE_COUNT = 4
-TRADE_SIZE_BTC = 0.25  # Desired position size in BTC
+LEVELS = [119136]        # Trigger level(s) for long
+CANDLE_COUNT = 4         # Consecutive candles below trigger
 LEVERAGE = 10
+MAX_RISK = 20            # Max loss in USD
 
-TP1_PERCENT = 0.0175
-TP2_PERCENT = 0.03
-STOP_LOSS_PERCENT = 0.005
+TP1_PERCENT = 0.0175     # 1.75%
+TP2_PERCENT = 0.03       # 3%
 
 # === INIT EXCHANGE ===
 exchange = ccxt.okx({
@@ -46,39 +43,53 @@ exchange = ccxt.okx({
     }
 })
 
-# (rest of your script unchanged...)
-
-async def fetch_candles():
-    candles = await exchange.fetch_ohlcv(SYMBOL, timeframe='5m', limit=CANDLE_COUNT)
-    return candles  # full candles
+# === HELPER FUNCTIONS ===
+async def fetch_candles(limit=CANDLE_COUNT):
+    return await exchange.fetch_ohlcv(SYMBOL, timeframe='5m', limit=limit)
 
 def is_confirmed(candles, level):
-    return all(candle[1] < level and candle[4] < level for candle in candles)  # wick + body below
+    # All candles (open and close) AND wicks below the level
+    return all(c[1] < level and c[4] < level for c in candles)
 
+async def get_last_hour_low():
+    candles = await fetch_candles(limit=12)  # 12 x 5min = 1 hour
+    lows = [c[3] for c in candles]           # c[3] = low wick
+    return min(lows)
+
+# === TRADE EXECUTION ===
 async def place_long_with_tp_sl(entry_price, level):
     try:
         await exchange.set_leverage(LEVERAGE, SYMBOL)
 
-        tp1_price = round(entry_price * (1 + TP1_PERCENT), 2)
-        tp2_price = round(entry_price * (1 + TP2_PERCENT), 2)
-        sl_price = round(entry_price * (1 - STOP_LOSS_PERCENT), 2)
+        # 1. Determine last hour's lowest wick & set SL
+        last_hour_low = await get_last_hour_low()
+        sl_price = round(last_hour_low * 0.999, 2)  # 0.1% below low
+        risk_per_btc = entry_price - sl_price
 
-        contract_value = entry_price * 0.01  # Each contract = 0.01 BTC
-        contracts = max(1, round(TRADE_SIZE_BTC / 0.01))  # Always use full contracts
+        if risk_per_btc <= 0:
+            print("❌ Invalid SL calculation — entry below or equal to SL.")
+            return
+
+        # 2. Calculate BTC size to risk MAX_RISK
+        trade_size_btc = MAX_RISK / risk_per_btc
+        contracts = max(1, round(trade_size_btc / 0.01))  # OKX: 1 contract = 0.01 BTC
         half_amount = max(1, round(contracts / 2))
 
-        usd_value = TRADE_SIZE_BTC * entry_price
-        print(f"📈 Longing {contracts} contracts (~{TRADE_SIZE_BTC} BTC = ${usd_value:.0f}) at ~{entry_price} triggered by level {level}")
+        tp1_price = round(entry_price * (1 + TP1_PERCENT), 2)
+        tp2_price = round(entry_price * (1 + TP2_PERCENT), 2)
+        usd_value = trade_size_btc * entry_price
+
+        print(f"📈 Longing {contracts} contracts (~{trade_size_btc:.4f} BTC = ${usd_value:.2f}) at {entry_price}")
+        print(f"🎯 TP1 at {tp1_price}, TP2 at {tp2_price}, SL at {sl_price} (Risk: ${MAX_RISK})")
 
         # Entry
-        order = await exchange.create_order(
+        await exchange.create_order(
             symbol=SYMBOL,
             type='market',
             side='buy',
             amount=contracts,
             params={'posSide': 'long'}
         )
-        print(f"✅ Entry order placed: {order}")
 
         # TP1
         await exchange.create_order(
@@ -103,19 +114,19 @@ async def place_long_with_tp_sl(entry_price, level):
         # SL
         await exchange.create_order(
             symbol=SYMBOL,
-            type='market',
+            type='stop-market',
             side='sell',
             amount=contracts,
             params={'posSide': 'long', 'stopLossPrice': sl_price, 'reduceOnly': True}
         )
 
-        print(f"🎯 TP1 at {tp1_price}, TP2 at {tp2_price}, SL at {sl_price}")
-        print(f"✅ TP/SL orders placed.")
+        print("✅ TP/SL orders placed.")
     except ccxt.BaseError as e:
-        print(f"❌ Error placing long trade for level {level}: {e}")
+        print(f"❌ Error placing long trade: {e}")
         if hasattr(e, 'response'):
             print(f"Response from API: {e.response}")
 
+# === MAIN LOOP ===
 async def main():
     print(f"✅ API loaded. Monitoring LONG entries for: {LEVELS} on {SYMBOL}")
     triggered_levels = set()
