@@ -23,7 +23,7 @@ if not API_KEY or API_KEY == "your_api_key_here" or \
 
 # === CONFIGURATION ===
 SYMBOL = 'BTC/USDT:USDT'
-LEVELS = [118000]        # Trigger level(s) for long
+LEVELS = [118100]        # Trigger level(s) for long
 CANDLE_COUNT = 4         # Consecutive candles below trigger
 LEVERAGE = 10
 MAX_RISK = 150            # Max loss in USD
