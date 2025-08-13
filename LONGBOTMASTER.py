@@ -48,11 +48,10 @@ async def fetch_candles(limit=CANDLE_COUNT):
     return await exchange.fetch_ohlcv(SYMBOL, timeframe='5m', limit=limit)
 
 def is_confirmed(candles, level):
-    # All candles (open and close) AND wicks below the level
-    return all(c[1] < level and c[4] < level for c in candles)
+    return all(c[1] < level and c[4] < level for c in candles)  # body + wick below
 
 async def get_last_hour_low():
-    candles = await fetch_candles(limit=12)  # 12 x 5min = 1 hour
+    candles = await fetch_candles(limit=12)  # 12 x 5m = 1 hour
     lows = [c[3] for c in candles]           # c[3] = low wick
     return min(lows)
 
@@ -61,10 +60,17 @@ async def place_long_with_tp_sl(entry_price, level):
     try:
         await exchange.set_leverage(LEVERAGE, SYMBOL)
 
-        # 1. Determine last hour's lowest wick & set SL
+        # 1. Determine last hour's lowest wick & SL
         last_hour_low = await get_last_hour_low()
-        sl_price = round(last_hour_low * 0.999, 2)  # 0.1% below low
+        sl_price = round(last_hour_low * 0.999, 2)  # 0.1% below
         risk_per_btc = entry_price - sl_price
+
+        # === DEBUG LOGGING ===
+        print("📊 --- Risk Calculation Details ---")
+        print(f"🕐 Last Hour's Lowest Wick: {last_hour_low}")
+        print(f"🔻 Stop Loss Price (0.1% below low): {sl_price}")
+        print(f"⚖ Risk per BTC: {risk_per_btc}")
+        print(f"💵 Max Allowed Risk: ${MAX_RISK}")
 
         if risk_per_btc <= 0:
             print("❌ Invalid SL calculation — entry below or equal to SL.")
@@ -72,15 +78,21 @@ async def place_long_with_tp_sl(entry_price, level):
 
         # 2. Calculate BTC size to risk MAX_RISK
         trade_size_btc = MAX_RISK / risk_per_btc
-        contracts = max(1, round(trade_size_btc / 0.01))  # OKX: 1 contract = 0.01 BTC
+        contracts = max(1, round(trade_size_btc / 0.01))  # 1 contract = 0.01 BTC
         half_amount = max(1, round(contracts / 2))
 
+        print(f"📏 BTC Size for Risk: {trade_size_btc:.6f} BTC")
+        print(f"📦 Contracts: {contracts} (Half: {half_amount})")
+
+        # 3. Calculate TP targets
         tp1_price = round(entry_price * (1 + TP1_PERCENT), 2)
         tp2_price = round(entry_price * (1 + TP2_PERCENT), 2)
         usd_value = trade_size_btc * entry_price
 
-        print(f"📈 Longing {contracts} contracts (~{trade_size_btc:.4f} BTC = ${usd_value:.2f}) at {entry_price}")
-        print(f"🎯 TP1 at {tp1_price}, TP2 at {tp2_price}, SL at {sl_price} (Risk: ${MAX_RISK})")
+        print(f"📈 Entry Price: {entry_price}")
+        print(f"🎯 TP1 at {tp1_price}, TP2 at {tp2_price}")
+        print(f"💰 Position Value: ${usd_value:.2f}")
+        print("📊 -------------------------------")
 
         # Entry
         await exchange.create_order(
@@ -169,3 +181,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
