@@ -26,7 +26,7 @@ SYMBOL = 'BTC/USDT:USDT'
 LEVELS = [118100]        # Trigger level(s) for long
 CANDLE_COUNT = 4         # Consecutive candles below trigger
 LEVERAGE = 10
-MAX_RISK = 150            # Max loss in USD
+MAX_RISK = 200            # Max loss in USD
 
 TP1_PERCENT = 0.0175     # 1.75%
 TP2_PERCENT = 0.03       # 3%
