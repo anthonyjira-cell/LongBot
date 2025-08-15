@@ -1,3 +1,4 @@
+
 import asyncio
 import ccxt.async_support as ccxt
 import os
@@ -6,7 +7,7 @@ import sys
 
 load_dotenv()
 
-# === ENVIRONMENT VARIABLES or fallback hardcoded credentials ===
+# === ENVIRONMENT VARIABLES ===
 API_KEY = os.getenv("OKX_API_KEY") or "your_api_key_here"
 API_SECRET = os.getenv("OKX_API_SECRET") or "your_api_secret_here"
 API_PASSWORD = os.getenv("OKX_API_PASSPHRASE") or "your_api_password_here"
@@ -23,13 +24,12 @@ if not API_KEY or API_KEY == "your_api_key_here" or \
 
 # === CONFIGURATION ===
 SYMBOL = 'BTC/USDT:USDT'
-LEVELS = [117100]        # Trigger level(s) for long
-CANDLE_COUNT = 4         # Consecutive candles below trigger
+LEVELS = [117100]         # Trigger levels for long
+CANDLE_COUNT = 4          # Consecutive candles below trigger
 LEVERAGE = 10
-MAX_RISK = 200            # Max loss in USD
-
-TP1_PERCENT = 0.0175     # 1.75%
-TP2_PERCENT = 0.03       # 3%
+MAX_RISK = 150             # Max loss in USD
+TP1_PERCENT = 0.0175       # 1.75%
+TP2_PERCENT = 0.03         # 3%
 
 # === INIT EXCHANGE ===
 exchange = ccxt.okx({
@@ -48,27 +48,62 @@ async def fetch_candles(limit=CANDLE_COUNT):
     return await exchange.fetch_ohlcv(SYMBOL, timeframe='5m', limit=limit)
 
 def is_confirmed(candles, level):
-    return all(c[1] < level and c[4] < level for c in candles)  # body + wick below
+    return all(c[1] < level and c[4] < level for c in candles)
 
 async def get_last_hour_low():
     candles = await fetch_candles(limit=12)  # 12 x 5m = 1 hour
-    lows = [c[3] for c in candles]           # c[3] = low wick
+    lows = [c[3] for c in candles]
     return min(lows)
+
+# === BREAKEVEN MONITOR ===
+async def monitor_breakeven(entry_price, risk_per_btc, contracts, stop_loss_order_id):
+    try:
+        target_price_for_breakeven = entry_price + risk_per_btc
+        print(f"📡 Breakeven monitor started. Trigger price: {target_price_for_breakeven}")
+
+        while True:
+            ticker = await exchange.fetch_ticker(SYMBOL)
+            current_price = ticker['last']
+
+            if current_price >= target_price_for_breakeven:
+                print(f"🔄 Price reached breakeven trigger ({current_price}). Moving SL to {entry_price}.")
+
+                # Cancel old SL
+                try:
+                    await exchange.cancel_order(stop_loss_order_id, SYMBOL)
+                except Exception as e:
+                    print(f"⚠️ Could not cancel old SL: {e}")
+
+                # Place new SL at breakeven
+                await exchange.create_order(
+                    symbol=SYMBOL,
+                    type='stop-market',
+                    side='sell',
+                    amount=contracts,
+                    params={'posSide': 'long', 'stopLossPrice': round(entry_price, 2), 'reduceOnly': True}
+                )
+
+                print("✅ Stop-loss moved to breakeven.")
+                break
+
+            await asyncio.sleep(2)
+
+    except Exception as e:
+        print(f"⚠️ Error in breakeven monitor: {e}")
 
 # === TRADE EXECUTION ===
 async def place_long_with_tp_sl(entry_price, level):
     try:
         await exchange.set_leverage(LEVERAGE, SYMBOL)
 
-        # 1. Determine last hour's lowest wick & SL
+        # Stop loss calculation
         last_hour_low = await get_last_hour_low()
-        sl_price = round(last_hour_low * 0.999, 2)  # 0.1% below
+        sl_price = round(last_hour_low * 0.999, 2)
         risk_per_btc = entry_price - sl_price
 
-        # === DEBUG LOGGING ===
         print("📊 --- Risk Calculation Details ---")
         print(f"🕐 Last Hour's Lowest Wick: {last_hour_low}")
-        print(f"🔻 Stop Loss Price (0.1% below low): {sl_price}")
+        print(f"🔻 Stop Loss Price: {sl_price}")
         print(f"⚖ Risk per BTC: {risk_per_btc}")
         print(f"💵 Max Allowed Risk: ${MAX_RISK}")
 
@@ -76,25 +111,21 @@ async def place_long_with_tp_sl(entry_price, level):
             print("❌ Invalid SL calculation — entry below or equal to SL.")
             return
 
-        # 2. Calculate BTC size to risk MAX_RISK
+        # Calculate size
         trade_size_btc = MAX_RISK / risk_per_btc
-        contracts = max(1, round(trade_size_btc / 0.01))  # 1 contract = 0.01 BTC
+        contracts = max(1, round(trade_size_btc / 0.01))
         half_amount = max(1, round(contracts / 2))
 
-        print(f"📏 BTC Size for Risk: {trade_size_btc:.6f} BTC")
+        print(f"📏 BTC Size: {trade_size_btc:.6f} BTC")
         print(f"📦 Contracts: {contracts} (Half: {half_amount})")
 
-        # 3. Calculate TP targets
+        # Targets
         tp1_price = round(entry_price * (1 + TP1_PERCENT), 2)
         tp2_price = round(entry_price * (1 + TP2_PERCENT), 2)
-        usd_value = trade_size_btc * entry_price
-
         print(f"📈 Entry Price: {entry_price}")
-        print(f"🎯 TP1 at {tp1_price}, TP2 at {tp2_price}")
-        print(f"💰 Position Value: ${usd_value:.2f}")
-        print("📊 -------------------------------")
+        print(f"🎯 TP1: {tp1_price}, TP2: {tp2_price}")
 
-        # Entry
+        # Entry order
         await exchange.create_order(
             symbol=SYMBOL,
             type='market',
@@ -103,7 +134,7 @@ async def place_long_with_tp_sl(entry_price, level):
             params={'posSide': 'long'}
         )
 
-        # TP1
+        # TP orders
         await exchange.create_order(
             symbol=SYMBOL,
             type='limit',
@@ -112,8 +143,6 @@ async def place_long_with_tp_sl(entry_price, level):
             price=tp1_price,
             params={'posSide': 'long', 'reduceOnly': True}
         )
-
-        # TP2
         await exchange.create_order(
             symbol=SYMBOL,
             type='limit',
@@ -123,8 +152,8 @@ async def place_long_with_tp_sl(entry_price, level):
             params={'posSide': 'long', 'reduceOnly': True}
         )
 
-        # SL
-        await exchange.create_order(
+        # Initial SL
+        stop_loss_order = await exchange.create_order(
             symbol=SYMBOL,
             type='stop-market',
             side='sell',
@@ -133,6 +162,10 @@ async def place_long_with_tp_sl(entry_price, level):
         )
 
         print("✅ TP/SL orders placed.")
+
+        # Launch breakeven monitor in background
+        asyncio.create_task(monitor_breakeven(entry_price, risk_per_btc, contracts, stop_loss_order['id']))
+
     except ccxt.BaseError as e:
         print(f"❌ Error placing long trade: {e}")
         if hasattr(e, 'response'):
@@ -171,7 +204,9 @@ async def main():
                             await asyncio.sleep(1)
                 else:
                     print(f"⏳ Level {level}: Not confirmed with {CANDLE_COUNT} candles.")
+
             await asyncio.sleep(10)
+
         except Exception as e:
             print(f"⚠️ Error in main loop: {e}")
             await asyncio.sleep(5)
@@ -181,4 +216,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
