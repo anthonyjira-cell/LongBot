@@ -1,4 +1,3 @@
-
 import asyncio
 import ccxt.async_support as ccxt
 import os
@@ -24,7 +23,7 @@ if not API_KEY or API_KEY == "your_api_key_here" or \
 
 # === CONFIGURATION ===
 SYMBOL = 'BTC/USDT:USDT'
-LEVELS = [117100]         # Trigger levels for long
+LEVELS = [116700]         # Trigger levels for long
 CANDLE_COUNT = 4          # Consecutive candles below trigger
 LEVERAGE = 10
 MAX_RISK = 150             # Max loss in USD
@@ -58,7 +57,7 @@ async def get_last_hour_low():
 # === BREAKEVEN MONITOR ===
 async def monitor_breakeven(entry_price, risk_per_btc, contracts, stop_loss_order_id):
     try:
-        target_price_for_breakeven = entry_price + risk_per_btc
+        target_price_for_breakeven = entry_price + (2 * risk_per_btc)  # ✅ move at 2R
         print(f"📡 Breakeven monitor started. Trigger price: {target_price_for_breakeven}")
 
         while True:
@@ -66,7 +65,7 @@ async def monitor_breakeven(entry_price, risk_per_btc, contracts, stop_loss_orde
             current_price = ticker['last']
 
             if current_price >= target_price_for_breakeven:
-                print(f"🔄 Price reached breakeven trigger ({current_price}). Moving SL to {entry_price}.")
+                print(f"🔄 Price reached 2R profit ({current_price}). Moving SL to {entry_price}.")
 
                 # Cancel old SL
                 try:
@@ -109,7 +108,7 @@ async def place_long_with_tp_sl(entry_price, level):
 
         if risk_per_btc <= 0:
             print("❌ Invalid SL calculation — entry below or equal to SL.")
-            return
+            return None
 
         # Calculate size
         trade_size_btc = MAX_RISK / risk_per_btc
@@ -162,19 +161,18 @@ async def place_long_with_tp_sl(entry_price, level):
         )
 
         print("✅ TP/SL orders placed.")
+        # Return the breakeven monitor task
+        return asyncio.create_task(monitor_breakeven(entry_price, risk_per_btc, contracts, stop_loss_order['id']))
 
-        # Launch breakeven monitor in background
-        asyncio.create_task(monitor_breakeven(entry_price, risk_per_btc, contracts, stop_loss_order['id']))
-
-    except ccxt.BaseError as e:
+    except Exception as e:
         print(f"❌ Error placing long trade: {e}")
-        if hasattr(e, 'response'):
-            print(f"Response from API: {e.response}")
+        return None
 
 # === MAIN LOOP ===
 async def main():
     print(f"✅ API loaded. Monitoring LONG entries for: {LEVELS} on {SYMBOL}")
     triggered_levels = set()
+    breakeven_tasks = []  # track monitors
 
     while len(triggered_levels) < len(LEVELS):
         try:
@@ -191,14 +189,14 @@ async def main():
 
                     if current_price < level:
                         print(f"⏳ Waiting for breakout above {level}")
-
-                        # Wait for breakout
                         while True:
                             ticker = await exchange.fetch_ticker(SYMBOL)
                             current_price = ticker['last']
                             if current_price > level:
                                 print(f"🚀 Breakout above {level} detected. Executing long.")
-                                await place_long_with_tp_sl(current_price, level)
+                                task = await place_long_with_tp_sl(current_price, level)
+                                if task:
+                                    breakeven_tasks.append(task)
                                 triggered_levels.add(level)
                                 break
                             await asyncio.sleep(1)
@@ -211,8 +209,15 @@ async def main():
             print(f"⚠️ Error in main loop: {e}")
             await asyncio.sleep(5)
 
+    # ✅ Wait for breakeven monitors to finish before shutdown
+    if breakeven_tasks:
+        print("⏳ Waiting for all breakeven monitors to finish...")
+        await asyncio.gather(*breakeven_tasks)
+
     print("🎉 All long levels triggered. Bot finished.")
     await exchange.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
