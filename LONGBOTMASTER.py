@@ -23,10 +23,10 @@ if not API_KEY or API_KEY == "your_api_key_here" or \
 
 # === CONFIGURATION ===
 SYMBOL = 'BTC/USDT:USDT'
-LEVELS = [115585]         # Trigger levels for long
+LEVELS = [114243]         # Trigger levels for long
 CANDLE_COUNT = 4          # Consecutive candles below trigger
 LEVERAGE = 10
-MAX_RISK = 150             # Max loss in USD
+MAX_RISK = 100             # Max loss in USD
 TP1_PERCENT = 0.0175       # 1.75%
 TP2_PERCENT = 0.03         # 3%
 
@@ -49,8 +49,9 @@ async def fetch_candles(limit=CANDLE_COUNT):
 def is_confirmed(candles, level):
     return all(c[1] < level and c[4] < level for c in candles)
 
-async def get_last_hour_low():
-    candles = await fetch_candles(limit=12)  # 12 x 5m = 1 hour
+async def get_last_3h_low():
+    """Return the lowest wick of the last 3 hours (36×5m candles)."""
+    candles = await fetch_candles(limit=36)
     lows = [c[3] for c in candles]
     return min(lows)
 
@@ -95,13 +96,13 @@ async def place_long_with_tp_sl(entry_price, level):
     try:
         await exchange.set_leverage(LEVERAGE, SYMBOL)
 
-        # Stop loss calculation
-        last_hour_low = await get_last_hour_low()
-        sl_price = round(last_hour_low * 0.999, 2)
+        # Stop loss calculation: lowest wick of last 3 hours - 0.1%
+        last_3h_low = await get_last_3h_low()
+        sl_price = round(last_3h_low * 0.999, 2)  # 0.1% below
         risk_per_btc = entry_price - sl_price
 
         print("📊 --- Risk Calculation Details ---")
-        print(f"🕐 Last Hour's Lowest Wick: {last_hour_low}")
+        print(f"🕐 Last 3h Lowest Wick: {last_3h_low}")
         print(f"🔻 Stop Loss Price: {sl_price}")
         print(f"⚖ Risk per BTC: {risk_per_btc}")
         print(f"💵 Max Allowed Risk: ${MAX_RISK}")
