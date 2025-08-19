@@ -2,7 +2,6 @@ import asyncio
 import ccxt.async_support as ccxt
 import os
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -25,29 +24,26 @@ exchange = ccxt.okx({
     "options": {"defaultType": "swap"},
 })
 
-
+# === Helper Functions ===
 async def get_last_n_candles(n=3):
-    candles = await exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=n)
-    return candles
-
+    return await exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=n)
 
 def three_candles_below_level(candles, level):
-    for o, h, l, c, v in candles:
+    for ts, o, h, l, c, v in candles:  # <- 6 elements unpack
         if h >= level:  # wick or body touches/exceeds level
             return False
     return True
 
-
 async def get_lowest_wick_last_3h():
-    candles = await exchange.fetch_ohlcv(SYMBOL, timeframe="5m", limit=36)  # 3h = 36x5m
-    lows = [c[3] if c[3] < c[2] else c[2] for c in candles]  # use low/wick
+    candles = await exchange.fetch_ohlcv(SYMBOL, timeframe="5m", limit=36)
+    lows = [l for ts, o, h, l, c, v in candles]  # use low/wick
     return min(lows)
 
-
+# === Main Bot ===
 async def main():
     print(f"👀 Watching breakout level {LEVEL} with {TIMEFRAME} candles...")
 
-    # === Wait for 3 candles below level ===
+    # --- Wait for 3 candles below level ---
     while True:
         candles = await get_last_n_candles(3)
         if three_candles_below_level(candles, LEVEL):
@@ -60,13 +56,13 @@ async def main():
                 break
         await asyncio.sleep(10)
 
-    # === Calculate stop loss ===
+    # --- Stop loss ---
     lowest_wick = await get_lowest_wick_last_3h()
-    stop_loss = lowest_wick * 0.999  # 0.1% below
+    stop_loss = lowest_wick * 0.999
     risk_per_btc = entry_price - stop_loss
     btc_size = RISK_AMOUNT / risk_per_btc
-    contracts = round(btc_size * entry_price / 100, 0)  # OKX contracts = USD/100
-    half_contracts = contracts // 2
+    contracts = round(btc_size * entry_price / 100, 0)
+    half_contracts = contracts // 2 if contracts > 1 else 1
 
     print(f"📊 Position sizing:")
     print(f"   Entry: {entry_price}")
@@ -74,13 +70,13 @@ async def main():
     print(f"   Risk per BTC: {risk_per_btc}")
     print(f"   Contracts: {contracts} (half: {half_contracts})")
 
-    # === Place Market Long ===
+    # --- Place long market order ---
     await exchange.create_order(
         SYMBOL, "market", "buy", contracts, None,
         {"posSide": "long"}
     )
 
-    # === Place initial SL ===
+    # --- Place initial stop loss ---
     stop_order = await exchange.create_order(
         SYMBOL, "stop_market", "sell", contracts, None,
         {
@@ -90,16 +86,13 @@ async def main():
         }
     )
 
-    # === Calculate 2R and 3R ===
+    # --- TP logic ---
     tp2 = entry_price + 2 * risk_per_btc
     tp3 = entry_price + 3 * risk_per_btc
-
-    print(f"🎯 Targets: 2R={tp2}, 3R={tp3}")
 
     breakeven_activated = False
     trailing_activated = False
 
-    # === Monitor price for TP logic ===
     while True:
         ticker = await exchange.fetch_ticker(SYMBOL)
         last_price = ticker["last"]
@@ -107,20 +100,14 @@ async def main():
         # 2R logic
         if not breakeven_activated and last_price >= tp2:
             print(f"✅ 2R reached! Taking half profit + moving SL to breakeven.")
-            # Take half off
             await exchange.create_order(
                 SYMBOL, "market", "sell", half_contracts, None,
                 {"posSide": "long", "reduceOnly": True}
             )
-            # Cancel old SL and move to BE
             await exchange.cancel_order(stop_order["id"], SYMBOL)
             stop_order = await exchange.create_order(
                 SYMBOL, "stop_market", "sell", half_contracts, None,
-                {
-                    "posSide": "long",
-                    "stopLossPrice": entry_price,
-                    "reduceOnly": True
-                }
+                {"posSide": "long", "stopLossPrice": entry_price, "reduceOnly": True}
             )
             breakeven_activated = True
 
@@ -147,5 +134,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     finally:
         asyncio.run(exchange.close())
-
 
