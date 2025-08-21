@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # === CONFIGURATION ===
-LEVEL = 112594        # breakout level to watch
+LEVEL = 111880        # breakout level to watch
 RISK_AMOUNT = 100     # max $ risk per trade
 SYMBOL = "BTC/USDT:USDT"
 TIMEFRAME = "5m"
