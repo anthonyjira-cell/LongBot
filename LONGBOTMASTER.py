@@ -23,12 +23,11 @@ if not API_KEY or API_KEY == "your_api_key_here" or \
 
 # === CONFIGURATION ===
 SYMBOL = 'BTC/USDT:USDT'
-LEVELS = [114460]          # Trigger levels for long
+LEVELS = [112602]          # Trigger levels for long
 CANDLE_COUNT = 4           # Consecutive candles below trigger
 LEVERAGE = 10
-MAX_RISK = 100             # Max loss in USD
-TP1_PERCENT = 0.0175       # 1.75%
-TP2_PERCENT = 0.03         # 3%
+MAX_RISK = 25             # Max loss in USD
+TRAIL_PERCENT = 0.005      # 0.5% trailing
 
 # === INIT EXCHANGE ===
 exchange = ccxt.okx({
@@ -54,41 +53,46 @@ async def get_last_3h_low():
     lows = [c[3] for c in candles]
     return min(lows)
 
-# === BREAKEVEN MONITOR ===
-async def monitor_breakeven(entry_price, risk_per_btc, contracts, stop_loss_order_id):
+# === TRAILING MONITOR ===
+async def monitor_trailing(entry_price, risk_per_btc, half_amount, stop_loss_order_id):
     try:
-        target_price_for_breakeven = entry_price + (2 * risk_per_btc)  # ✅ 2R level
-        print(f"📡 Breakeven monitor started. Trigger price: {target_price_for_breakeven}")
+        target_price_for_trailing = entry_price + (3 * risk_per_btc)  # ✅ 3R level
+        print(f"📡 Trailing monitor started. Trigger price: {target_price_for_trailing}")
+
+        highest_price = entry_price
 
         while True:
             ticker = await exchange.fetch_ticker(SYMBOL)
             current_price = ticker['last']
 
-            if current_price >= target_price_for_breakeven:
-                print(f"🔄 Price reached 2R profit ({current_price}). Moving SL to {entry_price}.")
+            if current_price > highest_price:
+                highest_price = current_price
+                new_sl = round(highest_price * (1 - TRAIL_PERCENT), 2)
 
-                # Cancel old SL
-                try:
-                    await exchange.cancel_order(stop_loss_order_id, SYMBOL)
-                except Exception as e:
-                    print(f"⚠️ Could not cancel old SL: {e}")
+                if current_price >= target_price_for_trailing:
+                    print(f"🚀 Price reached 3R. Activating trailing stop at {new_sl}")
 
-                # Place new SL at breakeven
-                await exchange.create_order(
-                    symbol=SYMBOL,
-                    type='stop-market',
-                    side='sell',
-                    amount=contracts,
-                    params={'posSide': 'long', 'stopLossPrice': round(entry_price, 2), 'reduceOnly': True}
-                )
+                    # Cancel old SL
+                    try:
+                        await exchange.cancel_order(stop_loss_order_id, SYMBOL)
+                    except Exception as e:
+                        print(f"⚠️ Could not cancel old SL: {e}")
 
-                print("✅ Stop-loss moved to breakeven.")
-                break
+                    # Place new trailing SL
+                    stop_loss_order = await exchange.create_order(
+                        symbol=SYMBOL,
+                        type='stop-market',
+                        side='sell',
+                        amount=half_amount,
+                        params={'posSide': 'long', 'stopLossPrice': new_sl, 'reduceOnly': True}
+                    )
+                    stop_loss_order_id = stop_loss_order['id']
+                    print(f"✅ Updated trailing SL to {new_sl}")
 
             await asyncio.sleep(2)
 
     except Exception as e:
-        print(f"⚠️ Error in breakeven monitor: {e}")
+        print(f"⚠️ Error in trailing monitor: {e}")
 
 # === TRADE EXECUTION ===
 async def place_long_with_tp_sl(entry_price, level):
@@ -119,10 +123,9 @@ async def place_long_with_tp_sl(entry_price, level):
         print(f"📦 Contracts: {contracts} (Half: {half_amount})")
 
         # Targets
-        tp1_price = round(entry_price * (1 + TP1_PERCENT), 2)
-        tp2_price = round(entry_price * (1 + TP2_PERCENT), 2)
+        tp1_price = round(entry_price + (2 * risk_per_btc), 2)  # ✅ 2R
         print(f"📈 Entry Price: {entry_price}")
-        print(f"🎯 TP1: {tp1_price}, TP2: {tp2_price}")
+        print(f"🎯 TP1 (2R): {tp1_price} | Trailing activates after 3R")
 
         # Entry
         await exchange.create_order(
@@ -133,7 +136,7 @@ async def place_long_with_tp_sl(entry_price, level):
             params={'posSide': 'long'}
         )
 
-        # Take profits
+        # Take profit 1 (half position at 2R)
         await exchange.create_order(
             symbol=SYMBOL,
             type='limit',
@@ -142,16 +145,8 @@ async def place_long_with_tp_sl(entry_price, level):
             price=tp1_price,
             params={'posSide': 'long', 'reduceOnly': True}
         )
-        await exchange.create_order(
-            symbol=SYMBOL,
-            type='limit',
-            side='sell',
-            amount=half_amount,
-            price=tp2_price,
-            params={'posSide': 'long', 'reduceOnly': True}
-        )
 
-        # Stop loss
+        # Stop loss (initial for full size)
         stop_loss_order = await exchange.create_order(
             symbol=SYMBOL,
             type='stop-market',
@@ -161,8 +156,9 @@ async def place_long_with_tp_sl(entry_price, level):
         )
 
         print("✅ TP/SL orders placed.")
-        # ✅ Start breakeven monitor
-        return asyncio.create_task(monitor_breakeven(entry_price, risk_per_btc, contracts, stop_loss_order['id']))
+
+        # ✅ Start trailing monitor (only for second half after 3R)
+        return asyncio.create_task(monitor_trailing(entry_price, risk_per_btc, half_amount, stop_loss_order['id']))
 
     except Exception as e:
         print(f"❌ Error placing long trade: {e}")
@@ -172,7 +168,7 @@ async def place_long_with_tp_sl(entry_price, level):
 async def main():
     print(f"✅ API loaded. Monitoring LONG entries for: {LEVELS} on {SYMBOL}")
     triggered_levels = set()
-    breakeven_tasks = []
+    trailing_tasks = []
 
     while len(triggered_levels) < len(LEVELS):
         try:
@@ -196,7 +192,7 @@ async def main():
                                 print(f"🚀 Breakout above {level} detected. Executing long.")
                                 task = await place_long_with_tp_sl(current_price, level)
                                 if task:
-                                    breakeven_tasks.append(task)
+                                    trailing_tasks.append(task)
                                 triggered_levels.add(level)
                                 break
                             await asyncio.sleep(1)
@@ -209,9 +205,9 @@ async def main():
             print(f"⚠️ Error in main loop: {e}")
             await asyncio.sleep(5)
 
-    if breakeven_tasks:
-        print("⏳ Waiting for all breakeven monitors to finish...")
-        await asyncio.gather(*breakeven_tasks)
+    if trailing_tasks:
+        print("⏳ Waiting for all trailing monitors to finish...")
+        await asyncio.gather(*trailing_tasks)
 
     print("🎉 All long levels triggered. Bot finished.")
     await exchange.close()
