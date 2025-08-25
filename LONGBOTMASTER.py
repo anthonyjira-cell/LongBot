@@ -23,11 +23,11 @@ if not API_KEY or API_KEY == "your_api_key_here" or \
 
 # === CONFIGURATION ===
 SYMBOL = 'BTC/USDT:USDT'
-LEVELS = [112416]          # Trigger levels for long
+LEVELS = [111627]          # Trigger levels for long
 CANDLE_COUNT = 4           # Consecutive candles below trigger
 LEVERAGE = 10
-MAX_RISK = 25             # Max loss in USD
-TRAIL_PERCENT = 0.005      # 0.5% trailing
+MAX_RISK = 100             # Max loss in USD
+TRAIL_PERCENT = 0.005      # 0.5% trailing stop
 
 # === INIT EXCHANGE ===
 exchange = ccxt.okx({
@@ -62,8 +62,16 @@ async def monitor_trailing(entry_price, risk_per_btc, half_amount, stop_loss_ord
         highest_price = entry_price
 
         while True:
-            ticker = await exchange.fetch_ticker(SYMBOL)
-            current_price = ticker['last']
+            try:
+                ticker = await exchange.fetch_ticker(SYMBOL)
+                current_price = ticker['last']
+            except Exception as e:
+                if "Too Many Requests" in str(e):
+                    print("⚠️ Rate limit hit in trailing monitor. Backing off 10s...")
+                    await asyncio.sleep(10)
+                    continue
+                else:
+                    raise
 
             if current_price > highest_price:
                 highest_price = current_price
@@ -89,7 +97,7 @@ async def monitor_trailing(entry_price, risk_per_btc, half_amount, stop_loss_ord
                     stop_loss_order_id = stop_loss_order['id']
                     print(f"✅ Updated trailing SL to {new_sl}")
 
-            await asyncio.sleep(2)
+            await asyncio.sleep(6)  # 🔧 slower polling to avoid rate limits
 
     except Exception as e:
         print(f"⚠️ Error in trailing monitor: {e}")
@@ -172,7 +180,16 @@ async def main():
 
     while len(triggered_levels) < len(LEVELS):
         try:
-            candles = await fetch_candles()
+            try:
+                candles = await fetch_candles()
+            except Exception as e:
+                if "Too Many Requests" in str(e):
+                    print("⚠️ Rate limit hit fetching candles. Backing off 10s...")
+                    await asyncio.sleep(10)
+                    continue
+                else:
+                    raise
+
             for level in LEVELS:
                 if level in triggered_levels:
                     continue
@@ -180,14 +197,31 @@ async def main():
                 if is_confirmed(candles, level):
                     print(f"🔍 Level {level}: {CANDLE_COUNT} candles below")
 
-                    ticker = await exchange.fetch_ticker(SYMBOL)
-                    current_price = ticker['last']
+                    try:
+                        ticker = await exchange.fetch_ticker(SYMBOL)
+                        current_price = ticker['last']
+                    except Exception as e:
+                        if "Too Many Requests" in str(e):
+                            print("⚠️ Rate limit hit fetching ticker. Backing off 10s...")
+                            await asyncio.sleep(10)
+                            continue
+                        else:
+                            raise
 
                     if current_price < level:
                         print(f"⏳ Waiting for breakout above {level}")
                         while True:
-                            ticker = await exchange.fetch_ticker(SYMBOL)
-                            current_price = ticker['last']
+                            try:
+                                ticker = await exchange.fetch_ticker(SYMBOL)
+                                current_price = ticker['last']
+                            except Exception as e:
+                                if "Too Many Requests" in str(e):
+                                    print("⚠️ Rate limit hit in breakout wait. Backing off 10s...")
+                                    await asyncio.sleep(10)
+                                    continue
+                                else:
+                                    raise
+
                             if current_price > level:
                                 print(f"🚀 Breakout above {level} detected. Executing long.")
                                 task = await place_long_with_tp_sl(current_price, level)
@@ -195,15 +229,15 @@ async def main():
                                     trailing_tasks.append(task)
                                 triggered_levels.add(level)
                                 break
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(3)  # slower while waiting for breakout
                 else:
                     print(f"⏳ Level {level}: Not confirmed with {CANDLE_COUNT} candles.")
 
-            await asyncio.sleep(10)
+            await asyncio.sleep(15)  # 🔧 slower polling to reduce API load
 
         except Exception as e:
             print(f"⚠️ Error in main loop: {e}")
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
 
     if trailing_tasks:
         print("⏳ Waiting for all trailing monitors to finish...")
